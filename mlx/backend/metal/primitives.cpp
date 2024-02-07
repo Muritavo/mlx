@@ -1,4 +1,4 @@
-// Copyright © 2023 Apple Inc.
+// Copyright © 2023-2024 Apple Inc.
 
 #include <algorithm>
 #include <cassert>
@@ -21,13 +21,19 @@ static constexpr int METAL_MAX_INDEX_ARRAYS = 10;
 
 void binary_op(
     const std::vector<array>& inputs,
-    array& out,
+    std::vector<array>& outputs,
     const std::string op) {
   assert(inputs.size() == 2);
   auto& a = inputs[0];
   auto& b = inputs[1];
   auto bopt = get_binary_op_type(a, b);
-  set_binary_op_output_data(a, b, out, bopt);
+  set_binary_op_output_data(a, b, outputs[0], bopt, true);
+  set_binary_op_output_data(a, b, outputs[1], bopt, true);
+
+  auto& out = outputs[0];
+  if (out.size() == 0) {
+    return;
+  }
 
   // Try to collapse contiguous dims
   auto [shape, strides] = collapse_contiguous_dims(a, b, out);
@@ -54,7 +60,7 @@ void binary_op(
       break;
   }
   kname << op << type_to_name(a);
-  if (bopt == General && out.ndim() <= MAX_BINARY_SPECIALIZED_DIMS) {
+  if (bopt == General && shape.size() <= MAX_BINARY_SPECIALIZED_DIMS) {
     kname << "_" << shape.size();
   }
 
@@ -63,8 +69,108 @@ void binary_op(
   auto kernel = d.get_kernel(kname.str());
   auto compute_encoder = d.get_command_encoder(s.index);
   compute_encoder->setComputePipelineState(kernel);
-  set_array_buffer(compute_encoder, a, 0);
-  set_array_buffer(compute_encoder, b, 1);
+  // - If a is donated it goes to the first output
+  // - If b is donated it goes to the first output if a was not donated
+  //   otherwise it goes to the second output
+  bool donate_a = a.data_shared_ptr() == nullptr;
+  bool donate_b = b.data_shared_ptr() == nullptr;
+  set_array_buffer(compute_encoder, donate_a ? outputs[0] : a, 0);
+  set_array_buffer(
+      compute_encoder, donate_b ? (donate_a ? outputs[1] : outputs[0]) : b, 1);
+  set_array_buffer(compute_encoder, outputs[0], 2);
+  set_array_buffer(compute_encoder, outputs[1], 3);
+
+  if (bopt == General) {
+    auto ndim = shape.size();
+    if (ndim > 3) {
+      compute_encoder->setBytes(shape.data(), ndim * sizeof(int), 4);
+      compute_encoder->setBytes(strides_a.data(), ndim * sizeof(size_t), 5);
+      compute_encoder->setBytes(strides_b.data(), ndim * sizeof(size_t), 6);
+    } else {
+      // The shape is implicit in the grid for <= 3D
+      compute_encoder->setBytes(strides_a.data(), ndim * sizeof(size_t), 4);
+      compute_encoder->setBytes(strides_b.data(), ndim * sizeof(size_t), 5);
+    }
+
+    if (ndim > MAX_BINARY_SPECIALIZED_DIMS) {
+      compute_encoder->setBytes(&ndim, sizeof(int), 7);
+    }
+
+    // Launch up to 3D grid of threads
+    size_t dim0 = ndim > 0 ? shape[ndim - 1] : 1;
+    size_t dim1 = ndim > 1 ? shape[ndim - 2] : 1;
+    size_t rest = out.size() / (dim0 * dim1);
+    NS::UInteger thread_group_size = kernel->maxTotalThreadsPerThreadgroup();
+    if (thread_group_size != 1024) {
+      throw std::runtime_error("[Metal::binary] Must use 1024 sized block");
+    }
+    auto group_dims = get_block_dims(dim0, dim1, rest);
+    MTL::Size grid_dims = MTL::Size(dim0, dim1, rest);
+    compute_encoder->dispatchThreads(grid_dims, group_dims);
+  } else {
+    // Launch a 1D grid of threads
+    size_t nthreads = out.data_size();
+    MTL::Size grid_dims = MTL::Size(nthreads, 1, 1);
+    NS::UInteger thread_group_size = kernel->maxTotalThreadsPerThreadgroup();
+    if (thread_group_size > nthreads) {
+      thread_group_size = nthreads;
+    }
+    MTL::Size group_dims = MTL::Size(thread_group_size, 1, 1);
+    compute_encoder->dispatchThreads(grid_dims, group_dims);
+  }
+}
+
+void binary_op(
+    const std::vector<array>& inputs,
+    array& out,
+    const std::string op) {
+  assert(inputs.size() == 2);
+  auto& a = inputs[0];
+  auto& b = inputs[1];
+  auto bopt = get_binary_op_type(a, b);
+  set_binary_op_output_data(a, b, out, bopt, true);
+  if (out.size() == 0) {
+    return;
+  }
+
+  // Try to collapse contiguous dims
+  auto [shape, strides] = collapse_contiguous_dims(a, b, out);
+  auto& strides_a = strides[0];
+  auto& strides_b = strides[1];
+  auto& strides_out = strides[2];
+
+  std::ostringstream kname;
+  switch (bopt) {
+    case ScalarScalar:
+      kname << "ss";
+      break;
+    case ScalarVector:
+      kname << "sv";
+      break;
+    case VectorScalar:
+      kname << "vs";
+      break;
+    case VectorVector:
+      kname << "vv";
+      break;
+    case General:
+      kname << "g";
+      break;
+  }
+  kname << op << type_to_name(a);
+  if (bopt == General && shape.size() <= MAX_BINARY_SPECIALIZED_DIMS) {
+    kname << "_" << shape.size();
+  }
+
+  auto& s = out.primitive().stream();
+  auto& d = metal::device(s.device);
+  auto kernel = d.get_kernel(kname.str());
+  auto compute_encoder = d.get_command_encoder(s.index);
+  compute_encoder->setComputePipelineState(kernel);
+  bool donate_a = a.data_shared_ptr() == nullptr;
+  bool donate_b = b.data_shared_ptr() == nullptr;
+  set_array_buffer(compute_encoder, donate_a ? out : a, 0);
+  set_array_buffer(compute_encoder, donate_b ? out : b, 1);
   set_array_buffer(compute_encoder, out, 2);
 
   if (bopt == General) {
@@ -114,13 +220,20 @@ void unary_op(
   auto& in = inputs[0];
   bool contig = in.flags().contiguous;
   if (contig) {
-    out.set_data(
-        allocator::malloc_or_wait(in.data_size() * out.itemsize()),
-        in.data_size(),
-        in.strides(),
-        in.flags());
+    if (in.is_donatable() && in.itemsize() == out.itemsize()) {
+      out.move_shared_buffer(in);
+    } else {
+      out.set_data(
+          allocator::malloc_or_wait(in.data_size() * out.itemsize()),
+          in.data_size(),
+          in.strides(),
+          in.flags());
+    }
   } else {
     out.set_data(allocator::malloc_or_wait(out.nbytes()));
+  }
+  if (in.size() == 0) {
+    return;
   }
 
   auto& s = out.primitive().stream();
@@ -139,7 +252,8 @@ void unary_op(
 
   auto compute_encoder = d.get_command_encoder(s.index);
   compute_encoder->setComputePipelineState(kernel);
-  set_array_buffer(compute_encoder, in, 0);
+  set_array_buffer(
+      compute_encoder, in.data_shared_ptr() == nullptr ? out : in, 0);
   set_array_buffer(compute_encoder, out, 1);
   if (!contig) {
     compute_encoder->setBytes(in.shape().data(), in.ndim() * sizeof(int), 2);
@@ -171,6 +285,9 @@ void arange_set_scalars(T start, T next, MTL::ComputeCommandEncoder* enc) {
 void Arange::eval_gpu(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 0);
   out.set_data(allocator::malloc_or_wait(out.nbytes()));
+  if (out.size() == 0) {
+    return;
+  }
   auto& s = stream();
   auto& d = metal::device(s.device);
   auto kernel = d.get_kernel("arange" + type_to_name(out));
@@ -298,9 +415,18 @@ void ArgReduce::eval_gpu(const std::vector<array>& inputs, array& out) {
     compute_encoder->setComputePipelineState(kernel);
     set_array_buffer(compute_encoder, in, 0);
     set_array_buffer(compute_encoder, out, 1);
-    compute_encoder->setBytes(shape.data(), ndim * sizeof(int), 2);
-    compute_encoder->setBytes(in_strides.data(), ndim * sizeof(size_t), 3);
-    compute_encoder->setBytes(out_strides.data(), ndim * sizeof(size_t), 4);
+    if (ndim == 0) {
+      // Pass place holders so metal doesn't complain
+      int shape_ = 0;
+      size_t stride_ = 0;
+      compute_encoder->setBytes(&shape_, sizeof(int), 2);
+      compute_encoder->setBytes(&stride_, sizeof(size_t), 3);
+      compute_encoder->setBytes(&stride_, sizeof(size_t), 4);
+    } else {
+      compute_encoder->setBytes(shape.data(), ndim * sizeof(int), 2);
+      compute_encoder->setBytes(in_strides.data(), ndim * sizeof(size_t), 3);
+      compute_encoder->setBytes(out_strides.data(), ndim * sizeof(size_t), 4);
+    }
     compute_encoder->setBytes(&ndim, sizeof(size_t), 5);
     compute_encoder->setBytes(&axis_stride, sizeof(size_t), 6);
     compute_encoder->setBytes(&axis_size, sizeof(size_t), 7);
@@ -360,8 +486,26 @@ void Cosh::eval_gpu(const std::vector<array>& inputs, array& out) {
   unary_op(inputs, out, "cosh");
 }
 
+void CustomVJP::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  eval(inputs, outputs);
+}
+
+void Depends::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  eval(inputs, outputs);
+}
+
 void Divide::eval_gpu(const std::vector<array>& inputs, array& out) {
   binary_op(inputs, out, "div");
+}
+
+void DivMod::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  binary_op(inputs, outputs, "divmod");
 }
 
 void Remainder::eval_gpu(const std::vector<array>& inputs, array& out) {
@@ -437,6 +581,20 @@ void Log1p::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 void LogicalNot::eval_gpu(const std::vector<array>& inputs, array& out) {
   unary_op(inputs, out, "lnot");
+}
+
+void LogicalAnd::eval_gpu(const std::vector<array>& inputs, array& out) {
+  binary_op(
+      inputs,
+      out,
+      "land"); // Assume "land" is the operation identifier for logical AND
+}
+
+void LogicalOr::eval_gpu(const std::vector<array>& inputs, array& out) {
+  binary_op(
+      inputs,
+      out,
+      "lor"); // Assume "lor" is the operation identifier for logical OR
 }
 
 void LogAddExp::eval_gpu(const std::vector<array>& inputs, array& out) {
@@ -517,6 +675,9 @@ void RandomBits::eval_gpu(const std::vector<array>& inputs, array& out) {
   size_t elems_per_key = out.size() / num_keys;
   size_t bytes_per_key = out.itemsize() * elems_per_key;
   out.set_data(allocator::malloc_or_wait(out.nbytes()));
+  if (out.size() == 0) {
+    return;
+  }
 
   size_t out_per_key = (bytes_per_key + 4 - 1) / 4;
   size_t half_size = out_per_key / 2;
@@ -591,6 +752,12 @@ void Sinh::eval_gpu(const std::vector<array>& inputs, array& out) {
   unary_op(inputs, out, "sinh");
 }
 
+void Split::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  eval(inputs, outputs);
+}
+
 void Square::eval_gpu(const std::vector<array>& inputs, array& out) {
   unary_op(inputs, out, "square");
 }
@@ -625,6 +792,12 @@ void Tanh::eval_gpu(const std::vector<array>& inputs, array& out) {
 
 void Transpose::eval_gpu(const std::vector<array>& inputs, array& out) {
   eval(inputs, out);
+}
+
+void QRF::eval_gpu(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  throw std::runtime_error("[QRF::eval_gpu] Metal QR factorization NYI.");
 }
 
 } // namespace mlx::core

@@ -1,7 +1,5 @@
 // Copyright © 2023 Apple Inc.
 
-#include <iostream>
-
 #include "doctest/doctest.h"
 
 #include "mlx/mlx.h"
@@ -76,7 +74,7 @@ TEST_CASE("test arg reduce small") {
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0});
 
   if (!metal::is_available()) {
-    INFO("Skiping arg reduction gpu tests");
+    INFO("Skipping arg reduction gpu tests");
     return;
   }
 
@@ -106,7 +104,7 @@ TEST_CASE("test arg reduce small") {
 
 TEST_CASE("test arg reduce against cpu") {
   if (!metal::is_available()) {
-    INFO("Skiping arg reduction gpu tests");
+    INFO("Skipping arg reduction gpu tests");
     return;
   }
 
@@ -148,7 +146,7 @@ void test_arg_reduce_small_bool(
 
 TEST_CASE("test arg reduce bool") {
   if (!metal::is_available()) {
-    INFO("Skiping arg reduction gpu tests");
+    INFO("Skipping arg reduction gpu tests");
     return;
   }
   auto x = array(
@@ -201,7 +199,7 @@ TEST_CASE("test arg reduce irregular strides") {
       Device::cpu, x, ArgReduce::ArgMin, {4, 2}, 2, {0, 0, 1, 1, 1, 1, 2, 2});
 
   if (!metal::is_available()) {
-    INFO("Skiping arg reduction gpu tests");
+    INFO("Skipping arg reduction gpu tests");
     return;
   }
 }

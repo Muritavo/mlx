@@ -1,24 +1,16 @@
-// Copyright © 2023 Apple Inc.
+// Copyright © 2023-2024 Apple Inc.
 
 #pragma once
 
-#include "array.h"
+#include "mlx/array.h"
 
 namespace mlx::core {
 
-/** Fuse equivalent arrays to avoid duplicate execution. */
-void simplify(const std::vector<array>& outputs);
-
-template <typename... Arrays>
-void simplify(Arrays... outputs) {
-  simplify(std::vector<array>{std::forward<Arrays>(outputs)...});
-}
-
-void eval(const std::vector<array>& outputs, bool retain_graph = false);
+void eval(const std::vector<array>& outputs);
 
 template <typename... Arrays>
 void eval(Arrays... outputs) {
-  eval(std::vector<array>{std::forward<Arrays>(outputs)...}, false);
+  eval(std::vector<array>{std::forward<Arrays>(outputs)...});
 }
 
 /**
@@ -80,7 +72,7 @@ ValueAndGradFn value_and_grad(
 
 /**
  *  Returns a function which computes the value and gradient of the input
- *  function with repsect to a single input array.
+ *  function with respect to a single input array.
  **/
 ValueAndGradFn inline value_and_grad(
     const std::function<std::vector<array>(const std::vector<array>&)>& fun,
@@ -132,7 +124,7 @@ std::function<std::vector<array>(const std::vector<array>&)> inline grad(
 
 /**
  *  Returns a function which computes the gradient of the input function with
- *  repsect to a single input array.
+ *  respect to a single input array.
  *
  *  The function being differentiated takes a vector of arrays and returns an
  *  array. The optional `argnum` index specifies which the argument to compute
@@ -183,5 +175,23 @@ std::function<std::vector<array>(const std::vector<array>&)> vmap(
     const std::function<std::vector<array>(const std::vector<array>&)>& fun,
     const std::vector<int>& in_axes = {},
     const std::vector<int>& out_axes = {});
+
+/**
+ * Return the results of calling fun with args but if their vjp is computed it
+ * will be computed by fun_vjp.
+ */
+std::function<std::vector<array>(const std::vector<array>&)> custom_vjp(
+    std::function<std::vector<array>(const std::vector<array>&)> fun,
+    std::function<std::vector<array>(
+        const std::vector<array>&,
+        const std::vector<array>&,
+        const std::vector<array>&)> fun_vjp);
+
+/**
+ * Checkpoint the gradient of a function. Namely, discard all intermediate
+ * state and recalculate it when we need to compute the gradient.
+ */
+std::function<std::vector<array>(const std::vector<array>&)> checkpoint(
+    std::function<std::vector<array>(const std::vector<array>&)> fun);
 
 } // namespace mlx::core

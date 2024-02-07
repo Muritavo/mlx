@@ -1,6 +1,4 @@
-// Copyright © 2023 Apple Inc.
-
-#include <pybind11/functional.h>
+// Copyright © 2023-2024 Apple Inc.
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <algorithm>
@@ -9,6 +7,7 @@
 #include <sstream>
 
 #include "mlx/array.h"
+#include "mlx/compile.h"
 #include "mlx/graph_utils.h"
 #include "mlx/transforms.h"
 #include "mlx/transforms_impl.h"
@@ -143,7 +142,8 @@ std::vector<array> tree_flatten(py::object tree, bool strict = true) {
     if (py::isinstance<array>(obj)) {
       flat_tree.push_back(py::cast<array>(obj));
     } else if (strict) {
-      throw std::invalid_argument("Argument is not an array");
+      throw std::invalid_argument(
+          "[tree_flatten] The argument should contain only arrays");
     }
   });
 
@@ -156,6 +156,55 @@ py::object tree_unflatten(
     int index = 0) {
   return tree_map(tree, [&](py::handle obj) {
     if (py::isinstance<array>(obj)) {
+      return py::cast(values[index++]);
+    } else {
+      return py::cast<py::object>(obj);
+    }
+  });
+}
+
+py::object structure_sentinel() {
+  static py::object sentinel;
+
+  if (sentinel.ptr() == nullptr) {
+    sentinel = py::capsule(&sentinel);
+    // probably not needed but this should make certain that we won't ever
+    // delete the sentinel
+    sentinel.inc_ref();
+  }
+
+  return sentinel;
+}
+
+std::pair<std::vector<array>, py::object> tree_flatten_with_structure(
+    py::object tree,
+    bool strict = true) {
+  auto sentinel = structure_sentinel();
+  std::vector<array> flat_tree;
+  auto structure = tree_map(
+      tree,
+      [&flat_tree, sentinel = std::move(sentinel), strict](py::handle obj) {
+        if (py::isinstance<array>(obj)) {
+          flat_tree.push_back(py::cast<array>(obj));
+          return sentinel;
+        } else if (!strict) {
+          return py::cast<py::object>(obj);
+        } else {
+          throw std::invalid_argument(
+              "[tree_flatten] The argument should contain only arrays");
+        }
+      });
+
+  return {flat_tree, structure};
+}
+
+py::object tree_unflatten_from_structure(
+    py::object structure,
+    const std::vector<array>& values,
+    int index = 0) {
+  auto sentinel = structure_sentinel();
+  return tree_map(structure, [&](py::handle obj) {
+    if (obj.is(sentinel)) {
       return py::cast(values[index++]);
     } else {
       return py::cast<py::object>(obj);
@@ -437,15 +486,130 @@ auto py_vmap(
   };
 }
 
+std::unordered_map<size_t, py::object>& tree_cache() {
+  // This map is used to Cache the tree structure of the outputs
+  static std::unordered_map<size_t, py::object> tree_cache_;
+  return tree_cache_;
+}
+
+struct PyCompiledFun {
+  py::function fun;
+  size_t fun_id;
+
+  PyCompiledFun(const py::function& fun)
+      : fun(fun), fun_id(reinterpret_cast<size_t>(fun.ptr())) {}
+
+  PyCompiledFun(const PyCompiledFun&) = delete;
+  PyCompiledFun& operator=(const PyCompiledFun&) = delete;
+  PyCompiledFun& operator=(PyCompiledFun&& other) = delete;
+  PyCompiledFun(PyCompiledFun&& other)
+      : fun(std::move(other.fun)), fun_id(reinterpret_cast<size_t>(fun.ptr())) {
+    other.fun_id = 0;
+  };
+
+  py::object operator()(const py::args& args) {
+    auto compile_fun = [this, &args](const std::vector<array>& a) {
+      // Call the python function and flatten the outputs
+      auto [outputs, py_outputs] = tree_flatten_with_structure(
+          std::move(this->fun(*tree_unflatten(args, a))), true);
+
+      tree_cache().insert({this->fun_id, py_outputs});
+      return outputs;
+    };
+
+    // Inputs must be array or tree of arrays
+    auto inputs = tree_flatten(args, true);
+
+    // Compile and call
+    auto outputs = detail::compile(compile_fun, fun_id)(inputs);
+
+    // Put the outputs back in the container
+    py::object py_outputs = tree_cache().at(fun_id);
+    return tree_unflatten_from_structure(py_outputs, outputs);
+  };
+
+  ~PyCompiledFun() {
+    py::gil_scoped_acquire gil;
+
+    tree_cache().erase(fun_id);
+    detail::compile_erase(fun_id);
+    fun.release().dec_ref();
+  }
+};
+
+class PyCheckpointedFun {
+ public:
+  PyCheckpointedFun(py::function fun) : fun_(std::move(fun)) {}
+
+  ~PyCheckpointedFun() {
+    py::gil_scoped_acquire gil;
+
+    fun_.release().dec_ref();
+  }
+
+  struct InnerFunction {
+    py::object fun_;
+    py::object args_structure_;
+    std::weak_ptr<py::object> output_structure_;
+
+    InnerFunction(
+        py::object fun,
+        py::object args_structure,
+        std::weak_ptr<py::object> output_structure)
+        : fun_(std::move(fun)),
+          args_structure_(std::move(args_structure)),
+          output_structure_(output_structure) {}
+    ~InnerFunction() {
+      py::gil_scoped_acquire gil;
+
+      fun_.release().dec_ref();
+      args_structure_.release().dec_ref();
+    }
+
+    std::vector<array> operator()(const std::vector<array>& inputs) {
+      auto args = py::cast<py::tuple>(
+          tree_unflatten_from_structure(args_structure_, inputs));
+      auto [outputs, output_structure] =
+          tree_flatten_with_structure(fun_(*args[0], **args[1]), false);
+      if (auto s = output_structure_.lock()) {
+        *s = output_structure;
+      }
+      return outputs;
+    }
+  };
+
+  py::object operator()(const py::args& args, const py::kwargs& kwargs) {
+    auto output_structure = std::make_shared<py::object>();
+    auto full_args = py::make_tuple(args, kwargs);
+    auto [inputs, args_structure] =
+        tree_flatten_with_structure(full_args, false);
+
+    auto outputs = checkpoint(
+        InnerFunction(fun_, args_structure, output_structure))(inputs);
+
+    return tree_unflatten_from_structure(*output_structure, outputs);
+  }
+
+ private:
+  py::function fun_;
+};
+
 void init_transforms(py::module_& m) {
+  py::options options;
+  options.disable_function_signatures();
+
   m.def(
       "eval",
-      [](const py::args& args, bool retain_graph) {
+      [](const py::args& args) {
         std::vector<array> arrays = tree_flatten(args);
-        eval(arrays, retain_graph);
+        {
+          py::gil_scoped_release nogil;
+          eval(arrays);
+        }
       },
-      "retain_graph"_a = false,
       R"pbdoc(
+        eval(*args) -> None
+
         Evaluate an :class:`array` or tree of :class:`array`.
 
         Args:
@@ -453,9 +617,6 @@ void init_transforms(py::module_& m) {
               or a tree of arrays. If a tree is given the nodes can be a Python
               :class:`list`, :class:`tuple` or :class:`dict` but the leafs must all be
               an :class:`array`.
-            retain_graph (bool): Indicate that the graph structure should be
-              preserved. This option is intended to enable function transforms
-              which contain control flow based on the value of an array.
       )pbdoc");
   m.def(
       "jvp",
@@ -480,6 +641,9 @@ void init_transforms(py::module_& m) {
       "primals"_a,
       "tangents"_a,
       R"pbdoc(
+        jvp(fun: function, primals: List[array], tangents: List[array]) -> Tuple[List[array], List[array]]
+
+
         Compute the Jacobian-vector product.
 
         This computes the product of the Jacobian of a function ``fun`` evaluated
@@ -521,6 +685,8 @@ void init_transforms(py::module_& m) {
       "primals"_a,
       "cotangents"_a,
       R"pbdoc(
+        vjp(fun: function, primals: List[array], cotangents: List[array]) -> Tuple[List[array], List[array]]
+
         Compute the vector-Jacobian product.
 
         Computes the product of the ``cotangents`` with the Jacobian of a
@@ -553,6 +719,8 @@ void init_transforms(py::module_& m) {
       "argnums"_a = std::nullopt,
       "argnames"_a = std::vector<std::string>{},
       R"pbdoc(
+        value_and_grad(fun: function, argnums: Optional[Union[int, List[int]]] = None, argnames: Union[str, List[str]] = []) -> function
+
         Returns a function which computes the value and gradient of ``fun``.
 
         The function passed to :func:`value_and_grad` should return either
@@ -619,6 +787,8 @@ void init_transforms(py::module_& m) {
       "argnums"_a = std::nullopt,
       "argnames"_a = std::vector<std::string>{},
       R"pbdoc(
+        grad(fun: function, argnums: Optional[Union[int, List[int]]] = None, argnames: Union[str, List[str]] = []) -> function
+
         Returns a function which computes the gradient of ``fun``.
 
         Args:
@@ -649,6 +819,8 @@ void init_transforms(py::module_& m) {
       "in_axes"_a = 0,
       "out_axes"_a = 0,
       R"pbdoc(
+        vmap(fun: function, in_axes: object = 0, out_axes: object = 0) -> function
+
         Returns a vectorized version of ``fun``.
 
         Args:
@@ -668,43 +840,6 @@ void init_transforms(py::module_& m) {
             function: The vectorized function.
       )pbdoc");
   m.def(
-      "simplify",
-      [](const py::args& args) {
-        std::vector<array> arrays = tree_flatten(args);
-        simplify(arrays);
-      },
-      R"pbdoc(
-        Simplify the graph that computes the arrays.
-
-        Run a few fast graph simplification operations to reuse computation and
-        reduce memory consumption. This function is meant to be run every time
-        so its overhead should be small, approximately 1ms for a graph with a
-        few thousand nodes.
-
-        .. code-block:: python
-
-          import mlx.core as mx
-
-          def foo(x):
-            y = x @ x
-            z = x @ x
-            return y + z
-
-          x = mx.ones((10, 10))
-          y = foo(x)
-          z = foo(x)
-
-          # Computes the matmul twice
-          mx.eval(y)
-
-          # Computes the matmul once
-          mx.simplify(z)
-          mx.eval(z)
-
-        Args:
-          args: Any number of arrays and/or trees of arrays to be simplified.
-      )pbdoc");
-  m.def(
       "export_to_dot",
       [](py::object file, const py::args& args) {
         std::vector<array> arrays = tree_flatten(args);
@@ -722,4 +857,50 @@ void init_transforms(py::module_& m) {
         }
       },
       "file"_a);
+  m.def(
+      "compile",
+      [](const py::function& fun) {
+        return py::cpp_function(PyCompiledFun{fun});
+      },
+      "fun"_a,
+      R"pbdoc(
+        compile(fun: function) -> function
+
+        Returns a compiled function which produces the same output as ``fun``.
+
+        Args:
+            fun (function): A function which takes a variable number of
+              :class:`array` or trees of :class:`array` and returns
+              a variable number of :class:`array` or trees of :class:`array`.
+
+        Returns:
+            function: A compiled function which has the same input arguments
+            as ``fun`` and returns the the same output(s).
+      )pbdoc");
+  m.def(
+      "disable_compile",
+      &disable_compile,
+      R"pbdoc(
+        disable_compile() -> None
+
+        Globally disable compilation. Setting the environment variable
+        ``MLX_DISABLE_COMPILE`` can also be used to disable compilation.
+      )pbdoc");
+  m.def(
+      "enable_compile",
+      &enable_compile,
+      R"pbdoc(
+        enable_compiler() -> None
+
+        Globally enable compilation. This will override the environment
+        variable ``MLX_DISABLE_COMPILE`` if set.
+      )pbdoc");
+  m.def(
+      "checkpoint",
+      [](py::function fun) { return py::cpp_function(PyCheckpointedFun{fun}); },
+      "fun"_a);
+
+  // Register static Python object cleanup before the interpreter exits
+  auto atexit = py::module_::import("atexit");
+  atexit.attr("register")(py::cpp_function([]() { tree_cache().clear(); }));
 }

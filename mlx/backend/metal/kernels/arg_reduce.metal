@@ -63,18 +63,6 @@ struct ArgMax {
   }
 };
 
-bool simd_shuffle_down(bool data, uint16_t delta) {
-  return simd_shuffle_down(static_cast<uint32_t>(data), delta);
-}
-
-uint64_t simd_shuffle_down(uint64_t data, uint16_t delta) {
-  return as_type<uint64_t>(simd_shuffle_down(as_type<uint2>(data), delta));
-}
-
-int64_t simd_shuffle_down(int64_t data, uint16_t delta) {
-  return as_type<int64_t>(simd_shuffle_down(as_type<uint2>(data), delta));
-}
-
 template <typename U>
 IndexValPair<U> simd_shuffle_down(IndexValPair<U> data, uint16_t delta) {
   return IndexValPair<U>(
@@ -114,7 +102,7 @@ template <typename T, typename Op, int N_READS>
   //    4. Reduce among them and go to 3
   //    4. Reduce in each simd_group
   //    6. Write in the thread local memory
-  //    6. Reduce them accross thread group
+  //    6. Reduce them across thread group
   //    7. Write the output without need for atomic
   Op op;
 

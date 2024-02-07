@@ -28,7 +28,7 @@ struct GEMVKernel {
   static_assert(BN == SIMD_SIZE, "gemv block must have a width of SIMD_SIZE");
 
   // - The matrix of size (M = out_vec_size, N = in_vec_size) is divided up 
-  //   into blocks of (BM * TM, BN * TN) divided amoung threadgroups
+  //   into blocks of (BM * TM, BN * TN) divided among threadgroups
   // - Every thread works on a block of (TM, TN)
   // - We assume each thead group is launched with (BN, BM, 1) threads
   //
@@ -42,7 +42,7 @@ struct GEMVKernel {
   // Edge case handling:
   // - The threadgroup with the largest tid will have blocks that exceed the matrix
   //   * The blocks that start outside the matrix are never read (thread results remain zero)
-  //   * The last thread that partialy overlaps with the matrix is shifted inwards 
+  //   * The last thread that partially overlaps with the matrix is shifted inwards 
   //     such that the thread block fits exactly in the matrix
 
   MLX_MTL_CONST short tgp_mem_size = BN * TN * 2;
@@ -121,8 +121,18 @@ struct GEMVKernel {
       for(int tm = 0; tm < TM; tm++) {
 
         // Load for the row 
-        for(int tn = 0; tn < TN; tn++) {
-          inter[tn] = mat[tm * in_vec_size + bn + tn];
+        if(bn + TN <= in_vec_size) {
+          #pragma clang loop unroll(full)
+          for(int tn = 0; tn < TN; tn++) {
+            inter[tn] = mat[tm * in_vec_size + bn + tn];
+          }
+
+        } else { // Edgecase
+          #pragma clang loop unroll(full)
+          for(int tn = 0; tn < TN; tn++) {
+            int col_idx = (bn + tn) < in_vec_size ? (bn + tn) : (in_vec_size - 1);
+            inter[tn] = mat[tm * in_vec_size + col_idx];
+          }
         }
 
         // Accumulate results
@@ -166,7 +176,7 @@ template <
 struct GEMVTKernel {
 
   // - The matrix of size (M = in_vec_size, N = out_vec_size) is divided up 
-  //   into blocks of (BM * TM, BN * TN) divided amoung threadgroups
+  //   into blocks of (BM * TM, BN * TN) divided among threadgroups
   // - Every thread works on a block of (TM, TN)
   // - We assume each thead group is launched with (BN, BM, 1) threads
   //
@@ -180,7 +190,7 @@ struct GEMVTKernel {
   // Edge case handling:
   // - The threadgroup with the largest tid will have blocks that exceed the matrix
   //   * The blocks that start outside the matrix are never read (thread results remain zero)
-  //   * The last thread that partialy overlaps with the matrix is shifted inwards 
+  //   * The last thread that partially overlaps with the matrix is shifted inwards 
   //     such that the thread block fits exactly in the matrix
 
 

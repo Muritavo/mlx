@@ -55,7 +55,7 @@ void init_ops(py::module_& m) {
         Args:
             a (array): Input array.
             shape (tuple(int)): New shape.
-            stream (Stream, optional): Stream or device. Defaults to ```None```
+            stream (Stream, optional): Stream or device. Defaults to ``None``
               in which case the default stream of the default device is used.
 
         Returns:
@@ -78,6 +78,11 @@ void init_ops(py::module_& m) {
 
       Flatten an array.
 
+      The axes flattened will be between ``start_axis`` and ``end_axis``,
+      inclusive. Negative axes are supported. After converting negative axis to
+      positive, axes outside the valid range will be clamped to a valid value,
+      ``start_axis`` to ``0`` and ``end_axis`` to ``ndim - 1``.
+
       Args:
           a (array): Input array.
           start_axis (int, optional): The first dimension to flatten. Defaults to ``0``.
@@ -87,6 +92,14 @@ void init_ops(py::module_& m) {
 
       Returns:
           array: The flattened array.
+
+      Example:
+          >>> a = mx.array([[1, 2], [3, 4]])
+          >>> mx.flatten(a)
+          array([1, 2, 3, 4], dtype=int32)
+          >>>
+          >>> mx.flatten(a, start_axis=0, end_axis=-1)
+          array([1, 2, 3, 4], dtype=int32)
   )pbdoc");
   m.def(
       "squeeze",
@@ -112,7 +125,7 @@ void init_ops(py::module_& m) {
         Args:
             a (array): Input array.
             axis (int or tuple(int), optional): Axes to remove. Defaults
-            to ```None``` in which case all size one axes are removed.
+            to ``None`` in which case all size one axes are removed.
 
         Returns:
             array: The output array with size one axes removed.
@@ -302,6 +315,33 @@ void init_ops(py::module_& m) {
 
         Returns:
             array: The quotient ``a / b``.
+      )pbdoc");
+  m.def(
+      "divmod",
+      [](const ScalarOrArray& a_, const ScalarOrArray& b_, StreamOrDevice s) {
+        auto [a, b] = to_arrays(a_, b_);
+        return divmod(a, b, s);
+      },
+      "a"_a,
+      "b"_a,
+      py::pos_only(),
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+        divmod(a: Union[scalar, array], b: Union[scalar, array], stream: Union[None, Stream, Device] = None) -> array
+
+        Element-wise quotient and remainder.
+
+        The fuction ``divmod(a, b)`` is equivalent to but faster than
+        ``(a // b, a % b)``. The function uses numpy-style broadcasting
+        semantics. Either or both input arrays can also be scalars.
+
+        Args:
+            a (array): Input array or scalar.
+            b (array): Input array or scalar.
+
+        Returns:
+            tuple(array, array): The quotient ``a // b`` and remainder ``a % b``.
       )pbdoc");
   m.def(
       "floor_divide",
@@ -539,7 +579,7 @@ void init_ops(py::module_& m) {
         Args:
             a (array): Input array or scalar.
             b (array): Input array or scalar.
-            equal_nan (bool): If ``True``, NaNs are treated as equal.
+            equal_nan (bool): If ``True``, NaNs are considered equal.
               Defaults to ``False``.
 
         Returns:
@@ -671,6 +711,51 @@ void init_ops(py::module_& m) {
             array: The boolean array containing the logical not of ``a``.
       )pbdoc");
   m.def(
+      "logical_and",
+      [](const ScalarOrArray& a, const ScalarOrArray& b, StreamOrDevice s) {
+        return logical_and(to_array(a), to_array(b), s);
+      },
+      "a"_a,
+      "b"_a,
+      py::pos_only(),
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+        logical_and(a: array, b: array, /, *, stream: Union[None, Stream, Device] = None) -> array
+
+        Element-wise logical and.
+
+        Args:
+            a (array): First input array or scalar.
+            b (array): Second input array or scalar.
+
+        Returns:
+            array: The boolean array containing the logical and of ``a`` and ``b``.
+    )pbdoc");
+
+  m.def(
+      "logical_or",
+      [](const ScalarOrArray& a, const ScalarOrArray& b, StreamOrDevice s) {
+        return logical_or(to_array(a), to_array(b), s);
+      },
+      "a"_a,
+      "b"_a,
+      py::pos_only(),
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+        logical_or(a: array, b: array, /, *, stream: Union[None, Stream, Device] = None) -> array
+
+        Element-wise logical or.
+
+        Args:
+            a (array): First input array or scalar.
+            b (array): Second input array or scalar.
+
+        Returns:
+            array: The boolean array containing the logical or of ``a`` and ``b``.
+    )pbdoc");
+  m.def(
       "logaddexp",
       [](const ScalarOrArray& a_, const ScalarOrArray& b_, StreamOrDevice s) {
         auto [a, b] = to_arrays(a_, b_);
@@ -729,7 +814,7 @@ void init_ops(py::module_& m) {
         Element-wise error function.
 
         .. math::
-          \mathrm{erf}(x) = \frac{2}{\sqrt{\pi}} \int_0^t e^{-t^2} \, dx
+          \mathrm{erf}(x) = \frac{2}{\sqrt{\pi}} \int_0^x e^{-t^2} \, dt
 
         Args:
             a (array): Input array.
@@ -1212,14 +1297,22 @@ void init_ops(py::module_& m) {
       )pbdoc");
   m.def(
       "linspace",
-      [](Scalar start, Scalar stop, int num, Dtype dtype, StreamOrDevice s) {
+      [](Scalar start,
+         Scalar stop,
+         int num,
+         std::optional<Dtype> dtype,
+         StreamOrDevice s) {
         return linspace(
-            scalar_to_double(start), scalar_to_double(stop), num, dtype, s);
+            scalar_to_double(start),
+            scalar_to_double(stop),
+            num,
+            dtype.value_or(float32),
+            s);
       },
       "start"_a,
       "stop"_a,
       "num"_a = 50,
-      "dtype"_a = float32,
+      "dtype"_a = std::optional{float32},
       "stream"_a = none,
       R"pbdoc(
       linspace(start, stop, num: Optional[int] = 50, dtype: Optional[Dtype] = float32, stream: Union[None, Stream, Device] = None) -> array
@@ -1263,7 +1356,7 @@ void init_ops(py::module_& m) {
         If the axis is not specified the array is treated as a flattened
         1-D array prior to performing the take.
 
-        As an example, if the ``axis=1`` this is equialent to ``a[:, indices, ...]``.
+        As an example, if the ``axis=1`` this is equivalent to ``a[:, indices, ...]``.
 
         Args:
             a (array): Input array.
@@ -1356,11 +1449,11 @@ void init_ops(py::module_& m) {
         }
       },
       "shape"_a,
-      "dtype"_a = std::nullopt,
+      "dtype"_a = std::optional{float32},
       py::kw_only(),
       "stream"_a = none,
       R"pbdoc(
-        zeros(shape: Union[int, List[int]], dtype: Optional[Dtype] = None, *, stream: Union[None, Stream, Device] = None) -> array
+        zeros(shape: Union[int, List[int]], dtype: Optional[Dtype] = float32, *, stream: Union[None, Stream, Device] = None) -> array
 
         Construct an array of zeros.
 
@@ -1403,11 +1496,11 @@ void init_ops(py::module_& m) {
         }
       },
       "shape"_a,
-      "dtype"_a = std::nullopt,
+      "dtype"_a = std::optional{float32},
       py::kw_only(),
       "stream"_a = none,
       R"pbdoc(
-        ones(shape: Union[int, List[int]], dtype: Optional[Dtype] = None, *, stream: Union[None, Stream, Device] = None) -> array
+        ones(shape: Union[int, List[int]], dtype: Optional[Dtype] = float32, *, stream: Union[None, Stream, Device] = None) -> array
 
         Construct an array of ones.
 
@@ -1449,11 +1542,11 @@ void init_ops(py::module_& m) {
       "n"_a,
       "m"_a = py::none(),
       "k"_a = 0,
-      "dtype"_a = std::nullopt,
+      "dtype"_a = std::optional{float32},
       py::kw_only(),
       "stream"_a = none,
       R"pbdoc(
-      eye(n: int, m: Optional[int] = None, k: int = 0, dtype: Optional[Dtype] = None, *, stream: Union[None, Stream, Device] = None) -> array
+      eye(n: int, m: Optional[int] = None, k: int = 0, dtype: Optional[Dtype] = float32, *, stream: Union[None, Stream, Device] = None) -> array
 
       Create an identity matrix or a general diagonal matrix.
 
@@ -1473,11 +1566,11 @@ void init_ops(py::module_& m) {
         return identity(n, dtype.value_or(float32), s);
       },
       "n"_a,
-      "dtype"_a = std::nullopt,
+      "dtype"_a = std::optional{float32},
       py::kw_only(),
       "stream"_a = none,
       R"pbdoc(
-      identity(n: int, dtype: Optional[Dtype] = None, *, stream: Union[None, Stream, Device] = None) -> array
+      identity(n: int, dtype: Optional[Dtype] = float32, *, stream: Union[None, Stream, Device] = None) -> array
 
       Create a square identity matrix.
 
@@ -1491,13 +1584,17 @@ void init_ops(py::module_& m) {
       )pbdoc");
   m.def(
       "tri",
-      [](int n, std::optional<int> m, int k, Dtype dtype, StreamOrDevice s) {
-        return tri(n, m.value_or(n), k, float32, s);
+      [](int n,
+         std::optional<int> m,
+         int k,
+         std::optional<Dtype> type,
+         StreamOrDevice s) {
+        return tri(n, m.value_or(n), k, type.value_or(float32), s);
       },
       "n"_a,
       "m"_a = none,
       "k"_a = 0,
-      "dtype"_a = float32,
+      "dtype"_a = std::optional{float32},
       py::kw_only(),
       "stream"_a = none,
       R"pbdoc(
@@ -1564,11 +1661,14 @@ void init_ops(py::module_& m) {
       "rtol"_a = 1e-5,
       "atol"_a = 1e-8,
       py::kw_only(),
+      "equal_nan"_a = false,
       "stream"_a = none,
       R"pbdoc(
-        allclose(a: array, b: array, /, rtol: float = 1e-05, atol: float = 1e-08, *, stream: Union[None, Stream, Device] = None) -> array
+        allclose(a: array, b: array, /, rtol: float = 1e-05, atol: float = 1e-08, *, equal_nan: bool = False, stream: Union[None, Stream, Device] = None) -> array
 
         Approximate comparison of two arrays.
+
+        Infinite values are considered equal if they have the same sign, NaN values are not equal unless ``equal_nan`` is ``True``.
 
         The arrays are considered equal if:
 
@@ -1584,6 +1684,47 @@ void init_ops(py::module_& m) {
             b (array): Input array.
             rtol (float): Relative tolerance.
             atol (float): Absolute tolerance.
+            equal_nan (bool): If ``True``, NaNs are considered equal.
+              Defaults to ``False``.
+
+        Returns:
+            array: The boolean output scalar indicating if the arrays are close.
+      )pbdoc");
+  m.def(
+      "isclose",
+      &isclose,
+      "a"_a,
+      "b"_a,
+      py::pos_only(),
+      "rtol"_a = 1e-5,
+      "atol"_a = 1e-8,
+      py::kw_only(),
+      "equal_nan"_a = false,
+      "stream"_a = none,
+      R"pbdoc(
+        isclose(a: array, b: array, /, rtol: float = 1e-05, atol: float = 1e-08, *, equal_nan: bool = False, stream: Union[None, Stream, Device] = None) -> array
+
+        Returns a boolean array where two arrays are element-wise equal within a tolerance.
+
+        Infinite values are considered equal if they have the same sign, NaN values are
+        not equal unless ``equal_nan`` is ``True``.
+
+        Two values are considered equal if:
+
+        .. code-block::
+
+         abs(a - b) <= (atol + rtol * abs(b))
+
+        Note unlike :func:`array_equal`, this function supports numpy-style
+        broadcasting.
+
+        Args:
+            a (array): Input array.
+            b (array): Input array.
+            rtol (float): Relative tolerance.
+            atol (float): Absolute tolerance.
+            equal_nan (bool): If ``True``, NaNs are considered equal.
+              Defaults to ``False``.
 
         Returns:
             array: The boolean output scalar indicating if the arrays are close.
@@ -1737,12 +1878,86 @@ void init_ops(py::module_& m) {
             array: The ceil of ``a``.
       )pbdoc");
   m.def(
+      "isnan",
+      &mlx::core::isnan,
+      "a"_a,
+      py::pos_only(),
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+        isnan(a: array, stream: Union[None, Stream, Device] = None) -> array
+
+        Return a boolean array indicating which elements are NaN.
+
+        Args:
+            a (array): Input array.
+
+        Returns:
+            array: The boolean array indicating which elements are NaN.
+      )pbdoc");
+  m.def(
+      "isinf",
+      &mlx::core::isinf,
+      "a"_a,
+      py::pos_only(),
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+        isinf(a: array, stream: Union[None, Stream, Device] = None) -> array
+
+        Return a boolean array indicating which elements are +/- inifnity.
+
+        Args:
+            a (array): Input array.
+
+        Returns:
+            array: The boolean array indicating which elements are +/- infinity.
+      )pbdoc");
+  m.def(
+      "isposinf",
+      &isposinf,
+      "a"_a,
+      py::pos_only(),
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+        isposinf(a: array, stream: Union[None, Stream, Device] = None) -> array
+
+        Return a boolean array indicating which elements are positive infinity.
+
+        Args:
+            a (array): Input array.
+            stream (Union[None, Stream, Device]): Optional stream or device.
+
+        Returns:
+            array: The boolean array indicating which elements are positive infinity.
+      )pbdoc");
+  m.def(
+      "isneginf",
+      &isneginf,
+      "a"_a,
+      py::pos_only(),
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+        isneginf(a: array, stream: Union[None, Stream, Device] = None) -> array
+
+        Return a boolean array indicating which elements are negative infinity.
+
+        Args:
+            a (array): Input array.
+            stream (Union[None, Stream, Device]): Optional stream or device.
+
+        Returns:
+            array: The boolean array indicating which elements are negative infinity.
+      )pbdoc");
+  m.def(
       "moveaxis",
       &moveaxis,
       "a"_a,
       py::pos_only(),
       "source"_a,
-      "destiantion"_a,
+      "destination"_a,
       py::kw_only(),
       "stream"_a = none,
       R"pbdoc(
@@ -2096,7 +2311,7 @@ void init_ops(py::module_& m) {
               singleton dimensions, defaults to `False`.
 
         Returns:
-            array: The output array with the indices of the minimum values.
+            array: The ``uint32`` array with the indices of the minimum values.
       )pbdoc");
   m.def(
       "argmax",
@@ -2129,7 +2344,7 @@ void init_ops(py::module_& m) {
               singleton dimensions, defaults to `False`.
 
         Returns:
-            array: The output array with the indices of the maximum values.
+            array: The ``uint32`` array with the indices of the maximum values.
       )pbdoc");
   m.def(
       "sort",
@@ -2185,7 +2400,7 @@ void init_ops(py::module_& m) {
               If unspecified, it defaults to -1 (sorting over the last axis).
 
         Returns:
-            array: The indices that sort the input array.
+            array: The ``uint32`` array containing indices that sort the input.
       )pbdoc");
   m.def(
       "partition",
@@ -2253,12 +2468,12 @@ void init_ops(py::module_& m) {
               will be of elements less or equal to the element at the ``kth``
               index and all indices after will be of elements greater or equal
               to the element at the ``kth`` index.
-            axis (int or None, optional): Optional axis to partiton over.
+            axis (int or None, optional): Optional axis to partition over.
               If ``None``, this partitions over the flattened array.
               If unspecified, it defaults to ``-1``.
 
         Returns:
-            array: The indices that partition the input array.
+            array: The `uint32`` array containing indices that partition the input.
       )pbdoc");
   m.def(
       "topk",
@@ -2426,13 +2641,13 @@ void init_ops(py::module_& m) {
       R"pbdoc(
       repeat(array: array, repeats: int, axis: Optional[int] = None, *, stream: Union[None, Stream, Device] = None) -> array
 
-      Repeate an array along a specified axis.
+      Repeat an array along a specified axis.
 
       Args:
           array (array): Input array.
           repeats (int): The number of repetitions for each element.
           axis (int, optional): The axis in which to repeat the array along. If
-            unspecified it uses the flattened array of the input and repeates 
+            unspecified it uses the flattened array of the input and repeats
             along axis 0.
           stream (Stream, optional): Stream or device. Defaults to ``None``.
 
@@ -2728,6 +2943,10 @@ void init_ops(py::module_& m) {
           throw std::invalid_argument("[convolve] Inputs must be 1D.");
         }
 
+        if (a.size() == 0 || v.size() == 0) {
+          throw std::invalid_argument("[convolve] Inputs cannot be empty.");
+        }
+
         array in = a.size() < v.size() ? v : a;
         array wt = a.size() < v.size() ? a : v;
         wt = slice(wt, {wt.shape(0) - 1}, {-wt.shape(0) - 1}, {-1}, s);
@@ -2890,20 +3109,14 @@ void init_ops(py::module_& m) {
       &mlx_save_helper,
       "file"_a,
       "arr"_a,
-      py::pos_only(),
-      "retain_graph"_a = std::nullopt,
-      py::kw_only(),
       R"pbdoc(
-        save(file: str, arr: array, / , retain_graph: Optional[bool] = None)
+        save(file: str, arr: array)
 
         Save the array to a binary file in ``.npy`` format.
 
         Args:
             file (str): File to which the array is saved
             arr (array): Array to be saved.
-            retain_graph (bool, optional): Whether or not to retain the graph
-              during array evaluation. If left unspecified the graph is retained
-              only if saving is done in a function transformation. Default: ``None``
       )pbdoc");
   m.def(
       "savez",
@@ -2965,44 +3178,74 @@ void init_ops(py::module_& m) {
       "file"_a,
       py::pos_only(),
       "format"_a = none,
+      "return_metadata"_a = false,
       py::kw_only(),
       "stream"_a = none,
       R"pbdoc(
-        load(file: str, /, format: Optional[str] = None, *, stream: Union[None, Stream, Device] = None) -> Union[array, Dict[str, array]]
+        load(file: str, /, format: Optional[str] = None, return_metadata: bool = False, *, stream: Union[None, Stream, Device] = None) -> Union[array, Dict[str, array]]
 
-        Load array(s) from a binary file in ``.npy``, ``.npz``, or ``.safetensors`` format.
+        Load array(s) from a binary file.
+
+        The supported formats are ``.npy``, ``.npz``, ``.safetensors``, and ``.gguf``.
 
         Args:
             file (file, str): File in which the array is saved.
             format (str, optional): Format of the file. If ``None``, the format
               is inferred from the file extension. Supported formats: ``npy``,
               ``npz``, and ``safetensors``. Default: ``None``.
+            return_metadata (bool, optional): Load the metadata for formats which
+              support matadata. The metadata will be returned as an additional
+              dictionary.
         Returns:
             result (array, dict):
                 A single array if loading from a ``.npy`` file or a dict mapping
                 names to arrays if loading from a ``.npz`` or ``.safetensors`` file.
+                If ``return_metadata` is ``True`` an additional dictionary of metadata
+                will be returned.
+
+        Warning:
+
+          When loading unsupported quantization formats from GGUF, tensors will
+          automatically cast to ``mx.float16``
+
       )pbdoc");
   m.def(
       "save_safetensors",
       &mlx_save_safetensor_helper,
       "file"_a,
       "arrays"_a,
-      py::pos_only(),
-      "retain_graph"_a = std::nullopt,
-      py::kw_only(),
       R"pbdoc(
-        save_safetensors(file: str, arrays: Dict[str, array], /, retain_graph: Optional[bool] = None)
+        save_safetensors(file: str, arrays: Dict[str, array])
 
         Save array(s) to a binary file in ``.safetensors`` format.
 
-        For more information on the format see https://huggingface.co/docs/safetensors/index.
+        See the `Safetensors documentation <https://huggingface.co/docs/safetensors/index>`_
+        for more information on the format.
 
         Args:
-            file (file, str): File in which the array is saved>
+            file (file, str): File in which the array is saved.
             arrays (dict(str, array)): The dictionary of names to arrays to be saved.
-            retain_graph (bool, optional): Whether or not to retain the graph
-              during array evaluation. If left unspecified the graph is retained
-              only if saving is done in a function transformation. Default: ``None``.
+      )pbdoc");
+  m.def(
+      "save_gguf",
+      &mlx_save_gguf_helper,
+      "file"_a,
+      "arrays"_a,
+      "metadata"_a = none,
+      R"pbdoc(
+        save_gguf(file: str, arrays: Dict[str, array], metadata: Dict[str, Union[array, str, List[str]]])
+
+        Save array(s) to a binary file in ``.gguf`` format.
+
+        See the `GGUF documentation <https://github.com/ggerganov/ggml/blob/master/docs/gguf.md>`_ for
+        more information on the format.
+
+        Args:
+            file (file, str): File in which the array is saved.
+            arrays (dict(str, array)): The dictionary of names to arrays to be saved.
+            metadata (dict(str, Union[array, str, list(str)])): The dictionary of
+               metadata to be saved. The values can be a scalar or 1D obj:`array`,
+               a :obj:`str`, or a :obj:`list` of :obj:`str`.
       )pbdoc");
   m.def(
       "where",
@@ -3050,7 +3293,7 @@ void init_ops(py::module_& m) {
 
         Round to the given number of decimals.
 
-        Bascially performs:
+        Basically performs:
 
         .. code-block:: python
 
@@ -3072,12 +3315,13 @@ void init_ops(py::module_& m) {
       py::pos_only(),
       "scales"_a,
       "biases"_a,
+      "transpose"_a = true,
       "group_size"_a = 64,
       "bits"_a = 4,
       py::kw_only(),
       "stream"_a = none,
       R"pbdoc(
-        quantized_matmul(x: array, w: array, scales: array, biases: array, /, group_size: int = 64, bits: int = 4, *, stream: Union[None, Stream, Device] = None) -> array
+        quantized_matmul(x: array, w: array, /, scales: array, biases: array, transpose: bool = True, group_size: int = 64, bits: int = 4, *, stream: Union[None, Stream, Device] = None) -> array
 
         Perform the matrix multiplication with the quantized matrix ``w``. The
         quantization uses one floating point scale and bias per ``group_size`` of
@@ -3089,10 +3333,13 @@ void init_ops(py::module_& m) {
           w (array): Quantized matrix packed in unsigned integers
           scales (array): The scales to use per ``group_size`` elements of ``w``
           biases (array): The biases to use per ``group_size`` elements of ``w``
+          transpose (bool, optional): Defines whether to multiply with the
+            transposed ``w`` or not, namely whether we are performing
+            ``x @ w.T`` or ``x @ w``. (default: ``True``)
           group_size (int, optional): The size of the group in ``w`` that
-            shares a scale and bias. (default: 64)
+            shares a scale and bias. (default: ``64``)
           bits (int, optional): The number of bits occupied by each element in
-            ``w``. (default: 4)
+            ``w``. (default: ``4``)
 
         Returns:
           result (array): The result of the multiplication of ``x`` with ``w``.
@@ -3146,9 +3393,9 @@ void init_ops(py::module_& m) {
         Args:
           w (array): Matrix to be quantized
           group_size (int, optional): The size of the group in ``w`` that shares a
-            scale and bias. (default: 64)
+            scale and bias. (default: ``64``)
           bits (int, optional): The number of bits occupied by each element of
-            ``w`` in the returned quantized matrix. (default: 4)
+            ``w`` in the returned quantized matrix. (default: ``4``)
 
         Returns:
           (tuple): A tuple containing
@@ -3187,11 +3434,204 @@ void init_ops(py::module_& m) {
           scales (array): The scales to use per ``group_size`` elements of ``w``
           biases (array): The biases to use per ``group_size`` elements of ``w``
           group_size (int, optional): The size of the group in ``w`` that shares a
-            scale and bias. (default: 64)
+            scale and bias. (default: ``64``)
           bits (int, optional): The number of bits occupied by each element in
-            ``w``. (default: 4)
+            ``w``. (default: ``4``)
 
         Returns:
           result (array): The dequantized version of ``w``
       )pbdoc");
+  m.def(
+      "tensordot",
+      [](const array& a,
+         const array& b,
+         const std::variant<int, std::vector<std::vector<int>>>& dims,
+         StreamOrDevice s) {
+        if (auto pv = std::get_if<int>(&dims); pv) {
+          return tensordot(a, b, *pv, s);
+        } else {
+          auto x = std::get<std::vector<std::vector<int>>>(dims);
+          if (x.size() != 2) {
+            throw std::invalid_argument(
+                "[tensordot] dims must be a list of two lists.");
+          }
+          return tensordot(a, b, {x[0], x[1]}, s);
+        }
+      },
+      "a"_a,
+      "b"_a,
+      py::pos_only(),
+      "axes"_a = 2,
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+        tensordot(a: array, b: array, /, axes: Union[int, List[List[int]]] = 2, *, stream: Union[None, Stream, Device] = None) -> array
+
+        Compute the tensor dot product along the specified axes.
+
+        Args:
+          a (array): Input array
+          b (array): Input array
+          axes (int or list(list(int)), optional): The number of dimensions to
+            sum over. If an integer is provided, then sum over the last
+            ``axes`` dimensions of ``a`` and the first ``axes`` dimensions of
+            ``b``. If a list of lists is provided, then sum over the
+            corresponding dimensions of ``a`` and ``b``. (default: 2)
+
+        Returns:
+          result (array): The tensor dot product.
+      )pbdoc");
+  m.def(
+      "inner",
+      &inner,
+      "a"_a,
+      "b"_a,
+      py::pos_only(),
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+      inner(a: array, b: array, /, *, stream: Union[None, Stream, Device] = None) -> array
+
+      Ordinary inner product of vectors for 1-D arrays, in higher dimensions a sum product over the last axes.
+
+      Args:
+        a (array): Input array
+        b (array): Input array
+
+      Returns:
+        result (array): The inner product.
+    )pbdoc");
+  m.def(
+      "outer",
+      &outer,
+      "a"_a,
+      "b"_a,
+      py::pos_only(),
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+      outer(a: array, b: array, /, *, stream: Union[None, Stream, Device] = None) -> array
+
+      Compute the outer product of two 1-D arrays, if the array's passed are not 1-D a flatten op will be run beforehand.
+
+      Args:
+        a (array): Input array
+        b (array): Input array
+
+      Returns:
+        result (array): The outer product.
+    )pbdoc");
+  m.def(
+      "tile",
+      [](const array& a, const IntOrVec& reps, StreamOrDevice s) {
+        if (auto pv = std::get_if<int>(&reps); pv) {
+          return tile(a, {*pv}, s);
+        } else {
+          return tile(a, std::get<std::vector<int>>(reps), s);
+        }
+      },
+      "a"_a,
+      "reps"_a,
+      py::pos_only(),
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+      tile(a: array, reps: Union[int, List[int]], /, *, stream: Union[None, Stream, Device] = None) -> array
+
+      Construct an array by repeating ``a`` the number of times given by ``reps``.
+
+      Args:
+        a (array): Input array
+        reps (int or list(int)): The number of times to repeat ``a`` along each axis.
+
+      Returns:
+        result (array): The tiled array.
+    )pbdoc");
+  m.def(
+      "addmm",
+      &addmm,
+      "c"_a,
+      "a"_a,
+      "b"_a,
+      py::pos_only(),
+      "alpha"_a = 1.0f,
+      "beta"_a = 1.0f,
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+        addmm(c: array, a: array, b: array, /, alpha: float = 1.0, beta: float = 1.0,  *, stream: Union[None, Stream, Device] = None) -> array
+
+        Matrix multiplication with addition and optional scaling.
+
+        Perform the (possibly batched) matrix multiplication of two arrays and add to the result
+        with optional scaling factors.
+
+        Args:
+            c (array): Input array or scalar.
+            a (array): Input array or scalar.
+            b (array): Input array or scalar.
+            alpha (float, optional): Scaling factor for the
+                matrix product of ``a`` and ``b`` (default: ``1``)
+            beta (float, optional): Scaling factor for ``c`` (default: ``1``)
+
+        Returns:
+            array: ``alpha * (a @ b)  + beta * c``
+      )pbdoc");
+  m.def(
+      "diagonal",
+      &diagonal,
+      "a"_a,
+      "offset"_a = 0,
+      "axis1"_a = 0,
+      "axis2"_a = 1,
+      "stream"_a = none,
+      R"pbdoc(
+        diagonal(a: array, offset: int = 0, axis1: int = 0, axis2: int = 1, stream: Union[None, Stream, Device] = None) -> array
+
+        Return specified diagonals.
+
+        If ``a`` is 2-D, then a 1-D array containing the diagonal at the given
+        ``offset`` is returned.
+
+        If ``a`` has more than two dimensions, then ``axis1`` and ``axis2``
+        determine the 2D subarrays from which diagonals are extracted. The new
+        shape is the original shape with ``axis1`` and ``axis2`` removed and a
+        new dimension inserted at the end corresponding to the diagonal.
+
+        Args:
+          a (array): Input array
+          offset (int, optional): Offset of the diagonal from the main diagonal.
+            Can be positive or negative. Default: ``0``.
+          axis1 (int, optional): The first axis of the 2-D sub-arrays from which
+              the diagonals should be taken. Default: ``0``.
+          axis2 (int, optional): The second axis of the 2-D sub-arrays from which
+              the diagonals should be taken. Default: ``1``.
+
+        Returns:
+            array: The diagonals of the array.
+      )pbdoc");
+  m.def(
+      "diag",
+      &diag,
+      "a"_a,
+      py::pos_only(),
+      "k"_a = 0,
+      py::kw_only(),
+      "stream"_a = none,
+      R"pbdoc(
+        diag(a: array, /, k: int = 0, *, stream: Union[None, Stream, Device] = None) -> array
+
+        Extract a diagonal or construct a diagonal matrix.
+        If ``a`` is 1-D then a diagonal matrix is constructed with ``a`` on the
+        :math:`k`-th diagonal. If ``a`` is 2-D then the :math:`k`-th diagonal is
+        returned.
+
+        Args:
+            a (array): 1-D or 2-D input array.
+            k (int, optional): The diagonal to extract or construct.
+                Default: ``0``.
+
+        Returns:
+            array: The extracted diagonal or the constructed diagonal matrix.
+        )pbdoc");
 }

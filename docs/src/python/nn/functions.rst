@@ -15,9 +15,10 @@ simple functions.
    gelu
    gelu_approx
    gelu_fast_approx
-   relu
+   mish
    prelu
+   relu
+   selu
+   softshrink
    silu
    step
-   selu
-   mish

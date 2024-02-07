@@ -8,6 +8,7 @@
 
 #include "mlx/allocator.h"
 #include "mlx/backend/common/arange.h"
+#include "mlx/backend/common/binary.h"
 #include "mlx/backend/common/copy.h"
 #include "mlx/backend/common/erf.h"
 #include "mlx/backend/common/threefry.h"
@@ -231,22 +232,38 @@ void Cosh::eval(const std::vector<array>& inputs, array& out) {
   }
 }
 
+void CustomVJP::eval(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  assert(inputs.size() > outputs.size());
+  for (int i = 0, j = inputs.size() - outputs.size(); i < outputs.size();
+       i++, j++) {
+    outputs[i].copy_shared_buffer(inputs[j]);
+  }
+}
+
+void Depends::eval(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  assert(inputs.size() > outputs.size());
+  for (int i = 0; i < outputs.size(); i++) {
+    outputs[i].copy_shared_buffer(inputs[i]);
+  }
+}
+
 void Erf::eval(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 1);
   const auto& in = inputs[0];
   switch (out.dtype()) {
     case float32:
-      out.set_data(allocator::malloc_or_wait(out.nbytes()));
       unary_op<float>(in, out, [](auto x) { return std::erf(x); });
       break;
     case float16:
-      out.set_data(allocator::malloc_or_wait(out.nbytes()));
       unary_op<float16_t>(in, out, [](auto x) {
         return static_cast<float16_t>(std::erf(static_cast<float>(x)));
       });
       break;
     case bfloat16:
-      out.set_data(allocator::malloc_or_wait(out.nbytes()));
       unary_op<bfloat16_t>(in, out, [](auto x) {
         return static_cast<bfloat16_t>(std::erf(static_cast<float>(x)));
       });
@@ -263,17 +280,14 @@ void ErfInv::eval(const std::vector<array>& inputs, array& out) {
   const auto& in = inputs[0];
   switch (out.dtype()) {
     case float32:
-      out.set_data(allocator::malloc_or_wait(out.nbytes()));
       unary_op<float>(in, out, [](auto x) { return erfinv(x); });
       break;
     case float16:
-      out.set_data(allocator::malloc_or_wait(out.nbytes()));
       unary_op<float16_t>(in, out, [](auto x) {
         return static_cast<float16_t>(erfinv(static_cast<float>(x)));
       });
       break;
     case bfloat16:
-      out.set_data(allocator::malloc_or_wait(out.nbytes()));
       unary_op<bfloat16_t>(in, out, [](auto x) {
         return static_cast<bfloat16_t>(erfinv(static_cast<float>(x)));
       });
@@ -362,6 +376,20 @@ void LogicalNot::eval(const std::vector<array>& inputs, array& out) {
   assert(inputs.size() == 1);
   auto& in = inputs[0];
   unary(in, out, [](auto x) { return !x; });
+}
+
+void LogicalAnd::eval(const std::vector<array>& inputs, array& out) {
+  assert(inputs.size() == 2); // LogicalAnd requires two input arrays
+  auto& in1 = inputs[0];
+  auto& in2 = inputs[1];
+  binary(in1, in2, out, [](auto x, auto y) { return x && y; });
+}
+
+void LogicalOr::eval(const std::vector<array>& inputs, array& out) {
+  assert(inputs.size() == 2); // LogicalOr requires two input arrays
+  auto& in1 = inputs[0];
+  auto& in2 = inputs[1];
+  binary(in1, in2, out, [](auto x, auto y) { return x || y; });
 }
 
 void Negative::eval(const std::vector<array>& inputs, array& out) {
@@ -571,6 +599,58 @@ void Slice::eval(const std::vector<array>& inputs, array& out) {
   }
 
   out.copy_shared_buffer(in, strides, flags, data_size, data_offset);
+}
+
+void Split::eval(
+    const std::vector<array>& inputs,
+    std::vector<array>& outputs) {
+  assert(inputs.size() == 1);
+
+  auto& in = inputs[0];
+
+  auto compute_new_flags = [](const auto& shape,
+                              const auto& strides,
+                              size_t in_data_size,
+                              auto flags) {
+    size_t data_size = 1;
+    size_t f_stride = 1;
+    size_t b_stride = 1;
+    flags.row_contiguous = true;
+    flags.col_contiguous = true;
+    for (int i = 0, ri = shape.size() - 1; ri >= 0; i++, ri--) {
+      flags.col_contiguous &= strides[i] == f_stride || shape[i] == 1;
+      flags.row_contiguous &= strides[ri] == b_stride || shape[ri] == 1;
+      f_stride *= shape[i];
+      b_stride *= shape[ri];
+      if (strides[i] > 0) {
+        data_size *= shape[i];
+      }
+    }
+
+    if (data_size == 1) {
+      // Broadcasted scalar array is contiguous.
+      flags.contiguous = true;
+    } else if (data_size == in_data_size) {
+      // Means we sliced a broadcasted dimension so leave the "no holes" flag
+      // alone.
+    } else {
+      // We sliced something. So either we are row or col contiguous or we
+      // punched a hole.
+      flags.contiguous &= flags.row_contiguous || flags.col_contiguous;
+    }
+
+    return std::pair<decltype(flags), size_t>{flags, data_size};
+  };
+
+  std::vector<int> indices(1, 0);
+  indices.insert(indices.end(), indices_.begin(), indices_.end());
+  for (int i = 0; i < indices.size(); i++) {
+    size_t offset = indices[i] * in.strides()[axis_];
+    auto [new_flags, data_size] = compute_new_flags(
+        outputs[i].shape(), in.strides(), in.data_size(), in.flags());
+    outputs[i].copy_shared_buffer(
+        in, in.strides(), new_flags, data_size, offset);
+  }
 }
 
 void Square::eval(const std::vector<array>& inputs, array& out) {
